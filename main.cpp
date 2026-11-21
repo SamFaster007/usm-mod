@@ -29,6 +29,19 @@ static Move_t oStormMove = (Move_t)0x004A6400;
 static void** g_StormVT = 0;
 static void* g_HookedCtrl = 0;
 
+void LoadIni() {
+    FILE* f = fopen("HardcoreMod.ini", "r");
+    if (!f) return;
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        float v = 0.f;
+        if (sscanf(line, "ENEMY_DMG=%f", &v) == 1) g_EnemyDmg = v;
+        else if (sscanf(line, "TORCH_SPEED=%f", &v) == 1) g_TorchSpeed = v;
+        else if (sscanf(line, "ENEMY_ATTACK_DELAY=%f", &v) == 1 && v > 0.01f) g_Aggro = 1.0f / v;
+    }
+    fclose(f);
+}
+
 void SaveIni() {
     FILE* f = fopen("HardcoreMod.ini", "w");
     if (f) {
@@ -105,7 +118,7 @@ DWORD WINAPI Worker(LPVOID) {
 }
 
 LRESULT CALLBACK hkWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
-    if (m == WM_KEYDOWN && wp == VK_INSERT) g_Menu = !g_Menu;
+    if (m == WM_KEYDOWN && (wp == VK_F1 || wp == VK_INSERT)) g_Menu = !g_Menu;
     if (g_Menu && ImGui_ImplWin32_WndProcHandler(h, m, wp, lp)) return 1;
     return CallWindowProcA(g_OrigWnd, h, m, wp, lp);
 }
@@ -125,7 +138,7 @@ HRESULT __stdcall hkEndScene(IDirect3DDevice9* d) {
         ImGui_ImplDX9_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
-        ImGui::Begin("USM Hardcore Mod (INSERT)", &g_Menu);
+        ImGui::Begin("USM Hardcore Mod (F1)", &g_Menu);
         ImGui::SliderFloat("Johnny Storm Speed", &g_TorchSpeed, 1.0f, 3.0f, "%.2fx");
         ImGui::SliderFloat("Enemy Damage", &g_EnemyDmg, 1.0f, 5.0f, "%.2fx");
         ImGui::SliderFloat("Enemy Aggression", &g_Aggro, 1.0f, 3.0f, "%.2fx");
@@ -146,19 +159,22 @@ HRESULT __stdcall hkReset(IDirect3DDevice9* d, D3DPRESENT_PARAMETERS* p) {
 }
 
 DWORD WINAPI InitDX(LPVOID) {
+    LoadIni();
+    Sleep(3000);
     CreateThread(0, 0, Worker, 0, 0, 0);
-    while (!GetModuleHandleA("d3d9.dll")) Sleep(100);
-    WNDCLASSA wc = { 0, DefWindowProcA, 0, 0, GetModuleHandleA(0), 0, 0, 0, 0, "D" };
-    RegisterClassA(&wc);
-    HWND hw = CreateWindowA("D", 0, WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, 0, 0, wc.hInstance, 0);
+    HWND gameHwnd = 0;
+    while (!gameHwnd) {
+        gameHwnd = FindWindowA(0, "Ultimate Spider-Man");
+        Sleep(200);
+    }
     IDirect3D9* d3 = Direct3DCreate9(D3D_SDK_VERSION);
     if (d3) {
         D3DPRESENT_PARAMETERS pp = { 0 };
         pp.Windowed = 1;
         pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = hw;
+        pp.hDeviceWindow = gameHwnd;
         IDirect3DDevice9* dv = 0;
-        if (SUCCEEDED(d3->CreateDevice(0, D3DDEVTYPE_HAL, hw, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dv))) {
+        if (SUCCEEDED(d3->CreateDevice(0, D3DDEVTYPE_HAL, gameHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dv))) {
             void** vt = *(void***)dv;
             DWORD op;
             VirtualProtect(vt, 200, PAGE_EXECUTE_READWRITE, &op);
@@ -170,7 +186,6 @@ DWORD WINAPI InitDX(LPVOID) {
         }
         d3->Release();
     }
-    DestroyWindow(hw);
     return 0;
 }
 
