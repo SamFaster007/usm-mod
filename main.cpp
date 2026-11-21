@@ -1,45 +1,60 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
-#include <d3d9.h>
+#include <commctrl.h>
 #include <cstdio>
 #include <cmath>
 #include <cstdint>
+#include <string>
+#include <vector>
+#include <fstream>
 #include <unordered_map>
-#include "imgui.h"
-#include "imgui_impl_win32.h"
-#include "imgui_impl_dx9.h"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+#pragma comment(lib, "kernel32.lib")
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "comctl32.lib")
 
 static float g_TorchSpeed = 1.65f;
 static float g_EnemyDmg = 3.5f;
 static float g_Aggro = 1.54f;
-static bool g_Menu = false;
-static bool g_Init = false;
-static HWND g_Hwnd = 0;
-static WNDPROC g_OrigWnd = 0;
+static HWND g_Panel = 0, g_sTorch = 0, g_sDmg = 0, g_sAggro = 0;
+static HWND g_lTorch = 0, g_lDmg = 0, g_lAggro = 0;
+static bool g_Visible = false;
 
-typedef HRESULT(__stdcall* EndScene_t)(IDirect3DDevice9*);
-static EndScene_t oEndScene = 0;
-typedef HRESULT(__stdcall* Reset_t)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
-static Reset_t oReset = 0;
 typedef void(__thiscall* Move_t)(void*, float);
 static Move_t oStormMove = (Move_t)0x004A6400;
-
 static void** g_StormVT = 0;
-static void* g_HookedCtrl = 0;
+
+HWND FindGameWindow() {
+    HWND gw = FindWindowA(0, "Ultimate Spider-Man");
+    if (!gw) gw = GetForegroundWindow();
+    return gw;
+}
+
+void EnsureBorderless(HWND gw) {
+    if (!gw || gw == g_Panel) return;
+    LONG style = GetWindowLongA(gw, GWL_STYLE);
+    if (style & WS_CAPTION) {
+        SetWindowLongA(gw, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU)) | WS_POPUP);
+        SetWindowPos(gw, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    }
+}
+
+void FocusGame() {
+    HWND gw = FindWindowA(0, "Ultimate Spider-Man");
+    if (gw) SetForegroundWindow(gw);
+}
 
 void LoadIni() {
-    FILE* f = fopen("HardcoreMod.ini", "r");
-    if (!f) return;
-    char line[128];
-    while (fgets(line, sizeof(line), f)) {
+    std::ifstream in("HardcoreMod.ini");
+    if (!in.is_open()) return;
+    std::string line;
+    while (std::getline(in, line)) {
         float v = 0.f;
-        if (sscanf(line, "ENEMY_DMG=%f", &v) == 1) g_EnemyDmg = v;
-        else if (sscanf(line, "TORCH_SPEED=%f", &v) == 1) g_TorchSpeed = v;
-        else if (sscanf(line, "ENEMY_ATTACK_DELAY=%f", &v) == 1 && v > 0.01f) g_Aggro = 1.0f / v;
+        if (sscanf(line.c_str(), "ENEMY_DMG=%f", &v) == 1) g_EnemyDmg = v;
+        else if (sscanf(line.c_str(), "TORCH_SPEED=%f", &v) == 1) g_TorchSpeed = v;
+        else if (sscanf(line.c_str(), "ENEMY_ATTACK_DELAY=%f", &v) == 1 && v > 0.01f) g_Aggro = 1.0f / v;
     }
-    fclose(f);
 }
 
 void SaveIni() {
@@ -54,12 +69,99 @@ void __fastcall hkStormMove(void* ecx, void*, float dt) {
     oStormMove(ecx, dt * g_TorchSpeed);
 }
 
+void UpdateLabels() {
+    std::vector<char> b(128, 0);
+    std::snprintf(b.data(), b.size(), "Johnny Storm Speed: %.2fx", g_TorchSpeed); SetWindowTextA(g_lTorch, b.data());
+    std::snprintf(b.data(), b.size(), "Enemy Damage: %.2fx", g_EnemyDmg); SetWindowTextA(g_lDmg, b.data());
+    std::snprintf(b.data(), b.size(), "Enemy Aggression: %.2fx", g_Aggro); SetWindowTextA(g_lAggro, b.data());
+}
+
+LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+    if (m == WM_HSCROLL) {
+        g_TorchSpeed = SendMessageA(g_sTorch, TBM_GETPOS, 0, 0) / 100.0f;
+        g_EnemyDmg = SendMessageA(g_sDmg, TBM_GETPOS, 0, 0) / 100.0f;
+        g_Aggro = SendMessageA(g_sAggro, TBM_GETPOS, 0, 0) / 100.0f;
+        UpdateLabels();
+    } else if (m == WM_COMMAND && LOWORD(wp) == 101) {
+        SaveIni();
+        MessageBeep(MB_OK);
+    } else if (m == WM_CLOSE) {
+        ShowWindow(h, SW_HIDE);
+        g_Visible = false;
+        FocusGame();
+        return 0;
+    }
+    return DefWindowProcA(h, m, wp, lp);
+}
+
+DWORD WINAPI GuiThread(LPVOID) {
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_BAR_CLASSES };
+    InitCommonControlsEx(&icc);
+    HFONT hf = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    WNDCLASSA wc = { 0, PanelProc, 0, 0, GetModuleHandleA(0), 0, LoadCursorA(0, IDC_ARROW), (HBRUSH)(COLOR_WINDOW + 1), 0, "USM_HC_PANEL" };
+    RegisterClassA(&wc);
+    g_Panel = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, "USM_HC_PANEL", "USM Hardcore Mod (F1)", WS_POPUP | WS_CAPTION | WS_SYSMENU, 30, 30, 320, 235, 0, 0, wc.hInstance, 0);
+
+    g_lTorch = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 15, 12, 280, 18, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_lTorch, WM_SETFONT, (WPARAM)hf, 1);
+    g_sTorch = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 10, 32, 290, 28, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_sTorch, TBM_SETRANGE, 1, MAKELONG(100, 300));
+    SendMessageA(g_sTorch, TBM_SETPOS, 1, (LPARAM)(g_TorchSpeed * 100));
+
+    g_lDmg = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 15, 66, 280, 18, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_lDmg, WM_SETFONT, (WPARAM)hf, 1);
+    g_sDmg = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 10, 86, 290, 28, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_sDmg, TBM_SETRANGE, 1, MAKELONG(100, 500));
+    SendMessageA(g_sDmg, TBM_SETPOS, 1, (LPARAM)(g_EnemyDmg * 100));
+
+    g_lAggro = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 15, 120, 280, 18, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_lAggro, WM_SETFONT, (WPARAM)hf, 1);
+    g_sAggro = CreateWindowA(TRACKBAR_CLASSA, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS, 10, 140, 290, 28, g_Panel, 0, wc.hInstance, 0);
+    SendMessageA(g_sAggro, TBM_SETRANGE, 1, MAKELONG(100, 300));
+    SendMessageA(g_sAggro, TBM_SETPOS, 1, (LPARAM)(g_Aggro * 100));
+
+    HWND btn = CreateWindowA("BUTTON", "Save to INI", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 95, 175, 120, 26, g_Panel, (HMENU)101, wc.hInstance, 0);
+    SendMessageA(btn, WM_SETFONT, (WPARAM)hf, 1);
+    UpdateLabels();
+
+    MSG msg;
+    bool prevF1 = false;
+    for (;;) {
+        while (PeekMessageA(&msg, 0, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessageA(&msg);
+        }
+        bool curF1 = (GetAsyncKeyState(VK_F1) & 0x8000) != 0;
+        if (curF1 && !prevF1) {
+            g_Visible = !g_Visible;
+            if (g_Visible) {
+                EnsureBorderless(FindGameWindow());
+                ShowWindow(g_Panel, SW_SHOW);
+                SetWindowPos(g_Panel, HWND_TOPMOST, 30, 30, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
+                ClipCursor(0);
+                while (ShowCursor(TRUE) < 0) {}
+                SetForegroundWindow(g_Panel);
+            } else {
+                ShowWindow(g_Panel, SW_HIDE);
+                FocusGame();
+            }
+        }
+        prevF1 = curF1;
+        Sleep(20);
+    }
+}
+
 DWORD WINAPI Worker(LPVOID) {
+    LoadIni();
+    Sleep(3000);
+    CreateThread(0, 0, GuiThread, 0, 0, 0);
     std::unordered_map<uintptr_t, float> hp, tm, mx;
     int tk = 0;
     for (;;) {
         Sleep(50);
         if ((++tk % 40) == 1) {
+            if (hp.size() > 15000) hp.clear();
+            if (tm.size() > 15000) { tm.clear(); mx.clear(); }
             MEMORY_BASIC_INFORMATION m;
             for (uintptr_t a = 0x00A00000; a < 0x7FEE0000; a = (uintptr_t)m.BaseAddress + m.RegionSize) {
                 if (!VirtualQuery((void*)a, &m, sizeof(m))) break;
@@ -68,12 +170,13 @@ DWORD WINAPI Worker(LPVOID) {
                     for (uintptr_t p = b; p < e; p += 4) {
                         if (*(uint32_t*)p == 0x00882B60 && *(uint32_t*)(p + 0x50) == 0x96478E0A) {
                             void* c = *(void**)(p + 0x58);
-                            if (c && *(uint32_t*)c == 0x00881460 && c != g_HookedCtrl) {
-                                if (!g_StormVT) g_StormVT = (void**)malloc(128);
-                                memcpy(g_StormVT, (void*)0x00881460, 128);
-                                *(g_StormVT + 11) = (void*)hkStormMove;
+                            if (c && !IsBadWritePtr(c, 4) && *(uint32_t*)c == 0x00881460) {
+                                if (!g_StormVT) {
+                                    g_StormVT = (void**)malloc(128);
+                                    memcpy(g_StormVT, (void*)0x00881460, 128);
+                                    *(g_StormVT + 11) = (void*)hkStormMove;
+                                }
                                 *(void**)c = g_StormVT;
-                                g_HookedCtrl = c;
                             }
                         }
                         float cur = *(float*)p, mn = *(float*)(p + 4), mxv = *(float*)(p + 8);
@@ -117,82 +220,10 @@ DWORD WINAPI Worker(LPVOID) {
     }
 }
 
-LRESULT CALLBACK hkWndProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
-    if (m == WM_KEYDOWN && (wp == VK_F1 || wp == VK_INSERT)) g_Menu = !g_Menu;
-    if (g_Menu && ImGui_ImplWin32_WndProcHandler(h, m, wp, lp)) return 1;
-    return CallWindowProcA(g_OrigWnd, h, m, wp, lp);
-}
-
-HRESULT __stdcall hkEndScene(IDirect3DDevice9* d) {
-    if (!g_Init) {
-        D3DDEVICE_CREATION_PARAMETERS cp;
-        d->GetCreationParameters(&cp);
-        g_Hwnd = cp.hFocusWindow;
-        g_OrigWnd = (WNDPROC)SetWindowLongA(g_Hwnd, GWL_WNDPROC, (LONG)hkWndProc);
-        ImGui::CreateContext();
-        ImGui_ImplWin32_Init(g_Hwnd);
-        ImGui_ImplDX9_Init(d);
-        g_Init = true;
-    }
-    if (g_Menu) {
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-        ImGui::NewFrame();
-        ImGui::Begin("USM Hardcore Mod (F1)", &g_Menu);
-        ImGui::SliderFloat("Johnny Storm Speed", &g_TorchSpeed, 1.0f, 3.0f, "%.2fx");
-        ImGui::SliderFloat("Enemy Damage", &g_EnemyDmg, 1.0f, 5.0f, "%.2fx");
-        ImGui::SliderFloat("Enemy Aggression", &g_Aggro, 1.0f, 3.0f, "%.2fx");
-        if (ImGui::Button("Save to INI")) SaveIni();
-        ImGui::End();
-        ImGui::EndFrame();
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    }
-    return oEndScene(d);
-}
-
-HRESULT __stdcall hkReset(IDirect3DDevice9* d, D3DPRESENT_PARAMETERS* p) {
-    if (g_Init) ImGui_ImplDX9_InvalidateDeviceObjects();
-    HRESULT r = oReset(d, p);
-    if (g_Init) ImGui_ImplDX9_CreateDeviceObjects();
-    return r;
-}
-
-DWORD WINAPI InitDX(LPVOID) {
-    LoadIni();
-    Sleep(3000);
-    CreateThread(0, 0, Worker, 0, 0, 0);
-    HWND gameHwnd = 0;
-    while (!gameHwnd) {
-        gameHwnd = FindWindowA(0, "Ultimate Spider-Man");
-        Sleep(200);
-    }
-    IDirect3D9* d3 = Direct3DCreate9(D3D_SDK_VERSION);
-    if (d3) {
-        D3DPRESENT_PARAMETERS pp = { 0 };
-        pp.Windowed = 1;
-        pp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-        pp.hDeviceWindow = gameHwnd;
-        IDirect3DDevice9* dv = 0;
-        if (SUCCEEDED(d3->CreateDevice(0, D3DDEVTYPE_HAL, gameHwnd, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp, &dv))) {
-            void** vt = *(void***)dv;
-            DWORD op;
-            VirtualProtect(vt, 200, PAGE_EXECUTE_READWRITE, &op);
-            oEndScene = (EndScene_t)(*(vt + 42));
-            oReset = (Reset_t)(*(vt + 16));
-            *(vt + 42) = (void*)hkEndScene;
-            *(vt + 16) = (void*)hkReset;
-            dv->Release();
-        }
-        d3->Release();
-    }
-    return 0;
-}
-
 BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID) {
     if (r == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(h);
-        CreateThread(0, 0, InitDX, 0, 0, 0);
+        CreateThread(0, 0, Worker, 0, 0, 0);
     }
     return 1;
 }
