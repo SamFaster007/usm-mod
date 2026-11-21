@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#include <fstream>
 #include <unordered_map>
 
 #pragma comment(lib, "kernel32.lib")
@@ -18,55 +17,116 @@ static float g_TorchSpeed = 1.65f;
 static float g_EnemyDmg = 3.5f;
 static float g_Aggro = 1.54f;
 static HWND g_Panel = 0, g_sTorch = 0, g_sDmg = 0, g_sAggro = 0;
-static HWND g_lTorch = 0, g_lDmg = 0, g_lAggro = 0;
+static HWND g_lTorch = 0, g_lDmg = 0, g_lAggro = 0, g_BtnSave = 0;
 static bool g_Visible = false;
 
 typedef void(__thiscall* Move_t)(void*, float);
 static Move_t oStormMove = (Move_t)0x004A6400;
 static void** g_StormVT = 0;
 
-HWND FindGameWindow() {
-    HWND gw = FindWindowA(0, "Ultimate Spider-Man");
-    if (!gw) gw = GetForegroundWindow();
-    return gw;
+struct StormHook {
+    void __thiscall Move(float dt) {
+        if (dt > 0.f && dt < 0.5f) dt *= g_TorchSpeed;
+        oStormMove(this, dt);
+    }
+};
+
+void* GetStormHookPtr() {
+    union {
+        void (__thiscall StormHook::*m)(float);
+        void* p;
+    } u;
+    u.m = &StormHook::Move;
+    return u.p;
 }
 
-void EnsureBorderless(HWND gw) {
-    if (!gw || gw == g_Panel) return;
-    LONG style = GetWindowLongA(gw, GWL_STYLE);
-    if (style & WS_CAPTION) {
-        SetWindowLongA(gw, GWL_STYLE, (style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU)) | WS_POPUP);
-        SetWindowPos(gw, HWND_TOP, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+std::wstring GetIniPathW() {
+    std::vector<wchar_t> buf(MAX_PATH, 0);
+    GetModuleFileNameW(0, buf.data(), MAX_PATH);
+    std::wstring p(buf.data());
+    size_t pos = p.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) p = p.substr(0, pos + 1);
+    return p + L"HardcoreMod.ini";
+}
+
+bool SafeReadU32(uintptr_t addr, uint32_t* out) {
+    __try {
+        *out = *(uint32_t*)addr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
+}
+
+bool SafeReadF32(uintptr_t addr, float* out) {
+    __try {
+        *out = *(float*)addr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeWriteF32(uintptr_t addr, float val) {
+    __try {
+        *(float*)addr = val;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void SafeHookStormFixed(uintptr_t entityAddr) {
+    __try {
+        uint32_t vt = 0, hash = 0, ctrlAddr = 0, ctrlVt = 0;
+        if (!SafeReadU32(entityAddr, &vt) || vt != 0x00882B60) return;
+        if (!SafeReadU32(entityAddr + 0x50, &hash) || hash != 0x96478E0A) return;
+        if (!SafeReadU32(entityAddr + 0x58, &ctrlAddr) || ctrlAddr < 0x00A00000) return;
+        if (!SafeReadU32(ctrlAddr, &ctrlVt) || ctrlVt != 0x00881460) return;
+
+        if (!g_StormVT) {
+            void** tmp = (void**)VirtualAlloc(0, 128, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            if (!tmp) return;
+            memcpy(tmp, (void*)0x00881460, 128);
+            if (*(tmp + 11) != (void*)0x004A6400) {
+                VirtualFree(tmp, 0, MEM_RELEASE);
+                return;
+            }
+            *(tmp + 11) = GetStormHookPtr();
+            g_StormVT = tmp;
+        }
+        InterlockedExchangePointer((PVOID*)ctrlAddr, (PVOID)g_StormVT);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 void FocusGame() {
     HWND gw = FindWindowA(0, "Ultimate Spider-Man");
-    if (gw) SetForegroundWindow(gw);
+    if (gw) {
+        SetForegroundWindow(gw);
+        RECT rc;
+        if (GetWindowRect(gw, &rc)) ClipCursor(&rc);
+    }
 }
 
 void LoadIni() {
-    std::ifstream in("HardcoreMod.ini");
-    if (!in.is_open()) return;
-    std::string line;
-    while (std::getline(in, line)) {
+    FILE* f = _wfopen(GetIniPathW().c_str(), L"r");
+    if (!f) return;
+    std::vector<char> line(256, 0);
+    while (fgets(line.data(), (int)line.size(), f)) {
         float v = 0.f;
-        if (sscanf(line.c_str(), "ENEMY_DMG=%f", &v) == 1) g_EnemyDmg = v;
-        else if (sscanf(line.c_str(), "TORCH_SPEED=%f", &v) == 1) g_TorchSpeed = v;
-        else if (sscanf(line.c_str(), "ENEMY_ATTACK_DELAY=%f", &v) == 1 && v > 0.01f) g_Aggro = 1.0f / v;
+        if (sscanf(line.data(), "ENEMY_DMG=%f", &v) == 1) g_EnemyDmg = v;
+        else if (sscanf(line.data(), "TORCH_SPEED=%f", &v) == 1) g_TorchSpeed = v;
+        else if (sscanf(line.data(), "ENEMY_ATTACK_DELAY=%f", &v) == 1 && v > 0.01f) g_Aggro = 1.0f / v;
     }
+    fclose(f);
 }
 
-void SaveIni() {
-    FILE* f = fopen("HardcoreMod.ini", "w");
-    if (f) {
-        fprintf(f, "ENEMY_DMG=%.2f\nTORCH_SPEED=%.2f\nENEMY_ATTACK_DELAY=%.2f\n", g_EnemyDmg, g_TorchSpeed, 1.0f / g_Aggro);
-        fclose(f);
-    }
-}
-
-void __fastcall hkStormMove(void* ecx, void*, float dt) {
-    oStormMove(ecx, dt * g_TorchSpeed);
+bool SaveIni() {
+    FILE* f = _wfopen(GetIniPathW().c_str(), L"w");
+    if (!f) return false;
+    fprintf(f, "ENEMY_DMG=%.2f\nTORCH_SPEED=%.2f\nENEMY_ATTACK_DELAY=%.2f\n", g_EnemyDmg, g_TorchSpeed, 1.0f / g_Aggro);
+    fclose(f);
+    return true;
 }
 
 void UpdateLabels() {
@@ -77,15 +137,24 @@ void UpdateLabels() {
 }
 
 LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
-    if (m == WM_HSCROLL) {
+    if (m == WM_SETCURSOR) {
+        SetCursor(LoadCursorA(0, IDC_ARROW));
+        return TRUE;
+    } else if (m == WM_HSCROLL) {
         g_TorchSpeed = SendMessageA(g_sTorch, TBM_GETPOS, 0, 0) / 100.0f;
         g_EnemyDmg = SendMessageA(g_sDmg, TBM_GETPOS, 0, 0) / 100.0f;
         g_Aggro = SendMessageA(g_sAggro, TBM_GETPOS, 0, 0) / 100.0f;
         UpdateLabels();
+        if (g_BtnSave) SetWindowTextA(g_BtnSave, "Save to INI");
     } else if (m == WM_COMMAND && LOWORD(wp) == 101) {
-        SaveIni();
-        MessageBeep(MB_OK);
+        if (SaveIni()) {
+            SetWindowTextA(g_BtnSave, "Saved!");
+            MessageBeep(MB_OK);
+        } else {
+            SetWindowTextA(g_BtnSave, "Error!");
+        }
     } else if (m == WM_CLOSE) {
+        SaveIni();
         ShowWindow(h, SW_HIDE);
         g_Visible = false;
         FocusGame();
@@ -120,8 +189,8 @@ DWORD WINAPI GuiThread(LPVOID) {
     SendMessageA(g_sAggro, TBM_SETRANGE, 1, MAKELONG(100, 300));
     SendMessageA(g_sAggro, TBM_SETPOS, 1, (LPARAM)(g_Aggro * 100));
 
-    HWND btn = CreateWindowA("BUTTON", "Save to INI", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 95, 175, 120, 26, g_Panel, (HMENU)101, wc.hInstance, 0);
-    SendMessageA(btn, WM_SETFONT, (WPARAM)hf, 1);
+    g_BtnSave = CreateWindowA("BUTTON", "Save to INI", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 95, 175, 120, 26, g_Panel, (HMENU)101, wc.hInstance, 0);
+    SendMessageA(g_BtnSave, WM_SETFONT, (WPARAM)hf, 1);
     UpdateLabels();
 
     MSG msg;
@@ -135,16 +204,19 @@ DWORD WINAPI GuiThread(LPVOID) {
         if (curF1 && !prevF1) {
             g_Visible = !g_Visible;
             if (g_Visible) {
-                EnsureBorderless(FindGameWindow());
+                SetWindowTextA(g_BtnSave, "Save to INI");
                 ShowWindow(g_Panel, SW_SHOW);
                 SetWindowPos(g_Panel, HWND_TOPMOST, 30, 30, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW);
-                ClipCursor(0);
-                while (ShowCursor(TRUE) < 0) {}
                 SetForegroundWindow(g_Panel);
             } else {
+                SaveIni();
                 ShowWindow(g_Panel, SW_HIDE);
                 FocusGame();
             }
+        }
+        if (g_Visible) {
+            ClipCursor(0);
+            while (ShowCursor(TRUE) < 0) {}
         }
         prevF1 = curF1;
         Sleep(20);
@@ -153,7 +225,7 @@ DWORD WINAPI GuiThread(LPVOID) {
 
 DWORD WINAPI Worker(LPVOID) {
     LoadIni();
-    Sleep(3000);
+    Sleep(5000);
     CreateThread(0, 0, GuiThread, 0, 0, 0);
     std::unordered_map<uintptr_t, float> hp, tm, mx;
     int tk = 0;
@@ -165,65 +237,22 @@ DWORD WINAPI Worker(LPVOID) {
             MEMORY_BASIC_INFORMATION m;
             for (uintptr_t a = 0x00A00000; a < 0x7FEE0000; a = (uintptr_t)m.BaseAddress + m.RegionSize) {
                 if (!VirtualQuery((void*)a, &m, sizeof(m))) break;
-                if (m.State == MEM_COMMIT && m.Type == MEM_PRIVATE && m.Protect == PAGE_READWRITE) {
-                    uintptr_t b = (uintptr_t)m.BaseAddress, e = b + m.RegionSize - 32;
-                    for (uintptr_t p = b; p < e; p += 4) {
-                        if (*(uint32_t*)p == 0x00882B60 && *(uint32_t*)(p + 0x50) == 0x96478E0A) {
-                            void* c = *(void**)(p + 0x58);
-                            if (c && !IsBadWritePtr(c, 4) && *(uint32_t*)c == 0x00881460) {
-                                if (!g_StormVT) {
-                                    g_StormVT = (void**)malloc(128);
-                                    memcpy(g_StormVT, (void*)0x00881460, 128);
-                                    *(g_StormVT + 11) = (void*)hkStormMove;
+                if (m.State == MEM_COMMIT && m.Type == MEM_PRIVATE && m.Protect == PAGE_READWRITE && m.RegionSize >= 256) {
+                    uintptr_t b = (uintptr_t)m.BaseAddress, e = b + m.RegionSize - 128;
+                    for (uintptr_t p = b + 4; p < e; p += 4) {
+                        uint32_t u0 = 0;
+                        if (!SafeReadU32(p, &u0)) break;
+                        if (u0 == 0x00882B60) SafeHookStormFixed(p);
+
+                        float cur = 0.f, mn = 0.f, mxv = 0.f;
+                        if (!SafeReadF32(p, &cur) || !SafeReadF32(p + 4, &mn) || !SafeReadF32(p + 8, &mxv)) continue;
+                        if (!std::isfinite(cur) || !std::isfinite(mxv)) continue;
+                        if (mn == 0.f && cur >= 25.f && cur <= mxv && (mxv == 100.f || mxv == 200.f) && !hp.count(p)) {
+                            uint32_t prevPtr = 0, flag = 99;
+                            if (SafeReadU32(p - 4, &prevPtr) && SafeReadU32(p + 12, &flag)) {
+                                if (prevPtr >= 0x00400000 && (flag == 0 || flag == 1)) {
+                                    hp[p] = cur;
                                 }
-                                *(void**)c = g_StormVT;
                             }
                         }
-                        float cur = *(float*)p, mn = *(float*)(p + 4), mxv = *(float*)(p + 8);
-                        if (mn == 0.f && cur >= 25.f && cur <= mxv && (mxv == 100.f || mxv == 200.f) && !hp.count(p))
-                            hp[p] = cur;
-                        if (*(int*)(p + 12) == 0 && *(int*)(p + 16) == 0 && *(int*)(p + 20) == 0 && cur > 0.f && mxv >= 1.f && mxv < 8.f && cur < mxv && !tm.count(p)) {
-                            tm[p] = cur;
-                            mx[p] = mxv;
-                        }
-                    }
-                }
-            }
-        }
-        for (auto it = hp.begin(); it != hp.end();) {
-            if (IsBadWritePtr((void*)it->first, 4)) { it = hp.erase(it); continue; }
-            float nh = *(float*)it->first, oh = it->second;
-            if (oh - nh >= 2.f && nh >= -50.f && oh - nh < 90.f) {
-                float adj = fmaxf(0.f, oh - (oh - nh) * g_EnemyDmg);
-                *(float*)it->first = adj;
-                it->second = adj;
-            } else if (nh > oh && nh <= 200.f) {
-                it->second = nh;
-            }
-            ++it;
-        }
-        if (g_Aggro > 1.01f) {
-            float bst = g_Aggro - 1.f;
-            for (auto it = tm.begin(); it != tm.end();) {
-                if (IsBadWritePtr((void*)it->first, 4)) { it = tm.erase(it); continue; }
-                float nt = *(float*)it->first, ot = it->second, lm = mx[it->first], dt = nt - ot;
-                if (dt >= 0.015f && dt <= 0.18f && nt > 0.f && nt < lm) {
-                    float adv = fminf(lm, nt + dt * bst);
-                    *(float*)it->first = adv;
-                    it->second = adv;
-                } else {
-                    it->second = nt;
-                }
-                ++it;
-            }
-        }
-    }
-}
-
-BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID) {
-    if (r == DLL_PROCESS_ATTACH) {
-        DisableThreadLibraryCalls(h);
-        CreateThread(0, 0, Worker, 0, 0, 0);
-    }
-    return 1;
-}
+                        uint32_t z1 = 1, z2 = 1, z3 = 1;
