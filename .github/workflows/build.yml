@@ -1,0 +1,18 @@
+name: Build ASI
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get ImGui
+        run: git clone --depth 1 https://github.com imgui
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+      - name: Compile
+        run: cl /O2 /LD /EHsc /I imgui /I imgui/backends main.cpp imgui/imgui.cpp imgui/imgui_draw.cpp imgui/imgui_tables.cpp imgui/imgui_widgets.cpp imgui/backends/imgui_impl_win32.cpp imgui/backends/imgui_impl_dx9.cpp user32.lib d3d9.lib /Fe:HardcoreMod.asi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HardcoreMod
+          path: HardcoreMod.asi
