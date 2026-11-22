@@ -1,4 +1,3 @@
-@'
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <commctrl.h>
@@ -198,4 +197,3 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD r, LPVOID) {
     if (r == DLL_PROCESS_ATTACH) { DisableThreadLibraryCalls(h); CreateThread(0, 0, Worker, 0, 0, 0); }
     return 1;
 }
-'@ | Set-Content -Path "C:\USM_Mod\asi_build\main.cpp" -Encoding UTF8; cd "C:\USM_Mod\asi_build"; git add main.cpp; git commit -m "clean stable build + storm diag"; git push
