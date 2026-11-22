@@ -62,15 +62,12 @@ void UpdateLabels() {
     std::snprintf(b.data(), b.size(), "Johnny Storm Speed: %.2fx", g_TorchSpeed); SetWindowTextA(g_lTorch, b.data());
     std::snprintf(b.data(), b.size(), "Enemy & Boss Damage: %.2fx", g_EnemyDmg); SetWindowTextA(g_lDmg, b.data());
     std::snprintf(b.data(), b.size(), "Enemy & Boss Aggression: %.2fx", g_Aggro); SetWindowTextA(g_lAggro, b.data());
-    uint32_t p54 = 0, p58 = 0, p5c = 0, p60 = 0, v54 = 0, v5c = 0, v60 = 0;
+    uint32_t p54 = 0, p58 = 0, p5c = 0, p60 = 0;
     if (g_StormEnt && SafeReadU32(g_StormEnt + 0x54, &p54)) {
         SafeReadU32(g_StormEnt + 0x58, &p58);
         SafeReadU32(g_StormEnt + 0x5C, &p5c);
         SafeReadU32(g_StormEnt + 0x60, &p60);
-        if (p54 >= 0x00400000) SafeReadU32(p54, &v54);
-        if (p5c >= 0x00400000) SafeReadU32(p5c, &v5c);
-        if (p60 >= 0x00400000) SafeReadU32(p60, &v60);
-        std::snprintf(b.data(), b.size(), "Ent:%08X 54:%08X(%08X)\n58:%08X 5C:%08X(%08X) 60:%08X(%08X)", (uint32_t)g_StormEnt, p54, v54, p58, p5c, v5c, p60, v60);
+        std::snprintf(b.data(), b.size(), "Ent:%08X 54:%08X 58:%08X 5C:%08X 60:%08X", (uint32_t)g_StormEnt, p54, p58, p5c, p60);
     } else {
         std::snprintf(b.data(), b.size(), "Storm: Not in race (start Torch race)");
     }
@@ -173,19 +170,19 @@ DWORD WINAPI Worker(LPVOID) {
                         float cur = 0.f, mn = 0.f, mxv = 0.f;
                         if (!SafeReadF32(p, &cur) || !SafeReadF32(p + 4, &mn) || !SafeReadF32(p + 8, &mxv)) continue;
                         if (!std::isfinite(cur) || !std::isfinite(mxv)) continue;
-                        if (mn == 0.f && cur >= 15.f && cur <= mxv && mxv >= 50.f && mxv <= 1000.f && !hp.count(p)) hp[p] = cur;
+                        if (mn == 0.f && cur >= 20.f && cur <= mxv && (mxv == 100.f || mxv == 200.f) && !hp.count(p)) hp[p] = cur;
                     }
                 }
             }
         }
         for (auto it = hp.begin(); it != hp.end();) {
             float nh = 0.f;
-            if (!SafeReadF32(it->first, &nh) || !std::isfinite(nh) || nh < -100.f || nh > 1005.f) { it = hp.erase(it); continue; }
+            if (!SafeReadF32(it->first, &nh) || !std::isfinite(nh) || nh < -100.f || nh > 205.f) { it = hp.erase(it); continue; }
             float oh = it->second;
-            if (oh - nh >= 0.4f && nh >= -50.f) {
+            if (!g_StormEnt && oh - nh >= 1.5f && oh - nh < 95.f && nh >= -50.f) {
                 float adj = fmaxf(0.f, oh - (oh - nh) * g_EnemyDmg);
                 if (SafeWriteF32(it->first, adj)) it->second = adj;
-            } else if (nh > oh && nh <= 1000.f) {
+            } else if (nh > oh && nh <= 200.f) {
                 it->second = nh;
             }
             ++it;
