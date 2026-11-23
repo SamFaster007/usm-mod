@@ -6,8 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Get ImGui
-        run: git clone --depth 1 https://github.com/ocornut/imgui.git imgui
-
+        run: git clone --branch v1.93.1 --depth 1 https://github.comocornut/imgui
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86
