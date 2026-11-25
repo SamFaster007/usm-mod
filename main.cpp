@@ -8,9 +8,6 @@
 #include <unordered_map>
 #pragma comment(lib,"comctl32.lib")
 
-static uintptr_t g_Base=0x00400000;
-#define RVA(a) (g_Base+((uintptr_t)(a)-0x00400000))
-
 static float g_SpideySpeed=1.35f,g_TorchSpeed=1.65f,g_EnemyDmg=3.5f,g_Aggro=1.54f;
 static bool g_Menu=false,g_FreeCam=false,g_PrevCam=false,g_Active=false;
 static HWND g_Panel=0,g_Lbl0=0,g_Lbl1=0,g_Lbl2=0,g_Lbl3=0,g_Trk0=0,g_Trk1=0,g_Trk2=0,g_Trk3=0,g_ChkActive=0,g_ChkCam=0;
@@ -18,13 +15,14 @@ static std::unordered_map<uintptr_t,float> g_Hp;
 static float g_PrevStormX=0,g_PrevStormY=0,g_PrevStormZ=0;
 static bool g_HasStormPrev=false;
 
-typedef void(__cdecl*AdvAI_t)(float);
-static AdvAI_t oAdvAI=0;
+typedef void(__thiscall*GameTick_t)(void*,const float*);
+static GameTick_t oGameTick=0;
 typedef int(__thiscall*AdvAnim_t)(void*,void*,float,float,float,float);
 static AdvAnim_t oAdvAnim=0;
 typedef uintptr_t(__cdecl*FindEnt_t)(const uint32_t*,int,bool);
-typedef void(__cdecl*SetPos_t)(uintptr_t,const float*);
-typedef void(__thiscall*AdjPipe_t)(uintptr_t,bool);
+typedef void(__cdecl*SetAbsPo_t)(uintptr_t,const void*);
+typedef void(__thiscall*SetCam_t)(uintptr_t,int);
+static uint8_t* g_TrampTick=0;
 static uint8_t* g_TrampAnim=0;
 
 void SaveIni(){
@@ -38,32 +36,26 @@ void SaveIni(){
 inline bool CanRead(uintptr_t p,size_t sz){return p>=0x00100000&&p<0x7FEE0000&&!IsBadReadPtr((void*)p,sz);}
 inline bool CanWrite(uintptr_t p,size_t sz){return p>=0x00100000&&p<0x7FEE0000&&!IsBadWritePtr((void*)p,sz);}
 uintptr_t GetHero(){
-    uintptr_t gp=RVA(0x0095C770);
-    if(!CanRead(gp,4))return 0;
-    uintptr_t w=*(uintptr_t*)gp;
+    if(!CanRead(0x0095C770,4))return 0;
+    uintptr_t w=*(uintptr_t*)0x0095C770;
     if(!CanRead(w+0x234,4))return 0;
     return *(uintptr_t*)(w+0x230);
 }
 void UpdateCam(){
     if(!g_FreeCam&&!g_PrevCam)return;
     __try{
-        uintptr_t g=*(uintptr_t*)RVA(0x009682E0);
-        if(!CanWrite(g+0x172,1))return;
-        bool justEnabled=(g_FreeCam&&!g_PrevCam);
-        *(uint8_t*)(g+0x172)=g_FreeCam?1:0;
-        g_PrevCam=g_FreeCam;
+        uintptr_t g=*(uintptr_t*)0x009682E0;
+        if(!CanRead(g,0x180))return;
+        if(g_FreeCam!=g_PrevCam){
+            *(uint8_t*)(g+0x172)=g_FreeCam?1:0;
+            ((SetCam_t)0x0054F8C0)(g,g_FreeCam?1:0);
+            g_PrevCam=g_FreeCam;
+        }
         if(!g_FreeCam)return;
         uintptr_t cam=*(uintptr_t*)(g+0x5C);
         if(!CanRead(cam,0x18))return;
         uintptr_t po=*(uintptr_t*)(cam+0x14);
         if(!CanWrite(po,0x40))return;
-        if(justEnabled){
-            uintptr_t srcCam=*(uintptr_t*)(g+0x60);
-            if(CanRead(srcCam,0x18)&&srcCam!=cam){
-                uintptr_t srcPo=*(uintptr_t*)(srcCam+0x14);
-                if(CanRead(srcPo,0x40))memcpy((void*)po,(void*)srcPo,0x40);
-            }
-        }
         float spd=(GetAsyncKeyState(VK_SHIFT)&0x8000)?4.5f:1.1f;
         float fwd=0,str=0,up=0,yaw=0,pit=0;
         if(GetAsyncKeyState(0x49)&0x8000)fwd+=spd;
@@ -76,48 +68,40 @@ void UpdateCam(){
         if(GetAsyncKeyState(VK_RIGHT)&0x8000)yaw+=0.045f;
         if(GetAsyncKeyState(VK_UP)&0x8000)pit-=0.035f;
         if(GetAsyncKeyState(VK_DOWN)&0x8000)pit+=0.035f;
-        if(yaw!=0){
-            float c=cosf(yaw),s=sinf(yaw);
-            for(int r=0;r<3;++r){
-                float x=*(float*)(po+r*16),z=*(float*)(po+r*16+8);
-                *(float*)(po+r*16)=x*c-z*s;*(float*)(po+r*16+8)=x*s+z*c;
-            }
-        }
-        if(pit!=0){
-            float c=cosf(pit),s=sinf(pit);
-            float y1=*(float*)(po+0x14),y2=*(float*)(po+0x24);
-            *(float*)(po+0x14)=y1*c-y2*s;*(float*)(po+0x24)=y1*s+y2*c;
-        }
-        float rx=*(float*)(po+0x00),ry=*(float*)(po+0x04),rz=*(float*)(po+0x08);
-        float fx=*(float*)(po+0x20),fy=*(float*)(po+0x24),fz=*(float*)(po+0x28);
-        float xyz0=*(float*)(po+0x30)+fx*fwd+rx*str;
-        float xyz1=*(float*)(po+0x34)+fy*fwd+ry*str+up;
-        float xyz2=*(float*)(po+0x38)+fz*fwd+rz*str;
-        ((SetPos_t)RVA(0x004E1230))(cam,&xyz0);
-        ((AdjPipe_t)RVA(0x00577AF0))(cam,true);
-    }__except(1){}
-}
-void UpdateStorm(){
-    if(!g_Active||g_TorchSpeed<=1.01f){g_HasStormPrev=false;return;}
-    __try{
-        uint32_t sh=0x96478E0A;
-        uintptr_t act=((FindEnt_t)RVA(0x004DC300))(&sh,29,true);
-        if(!CanRead(act,0x18)){g_HasStormPrev=false;return;}
-        uintptr_t po=*(uintptr_t*)(act+0x14);
-        if(CanWrite(po,0x40)){
-            float x=*(float*)(po+0x30),y=*(float*)(po+0x34),z=*(float*)(po+0x38);
-            if(g_HasStormPrev){
-                float dx=x-g_PrevStormX,dy=y-g_PrevStormY,dz=z-g_PrevStormZ,d2=dx*dx+dy*dy+dz*dz;
-                if(d2>0.0001f&&d2<400.f){
-                    float m=g_TorchSpeed-1.f;
-                    float nx=x+dx*m,ny=y+dy*m,nz=z+dz*m;
-                    ((SetPos_t)RVA(0x004E1230))(act,&nx);
-                    x=nx;y=ny;z=nz;
+        if(yaw!=0||pit!=0||fwd!=0||str!=0||up!=0){
+            if(yaw!=0){
+                float c=cosf(yaw),s=sinf(yaw);
+                for(int r=0;r<3;++r){
+                    float x=*(float*)(po+r*16),z=*(float*)(po+r*16+8);
+                    *(float*)(po+r*16)=x*c-z*s;*(float*)(po+r*16+8)=x*s+z*c;
                 }
             }
-            g_PrevStormX=x;g_PrevStormY=y;g_PrevStormZ=z;g_HasStormPrev=true;
+            if(pit!=0){
+                float c=cosf(pit),s=sinf(pit);
+                float y1=*(float*)(po+0x14),y2=*(float*)(po+0x24);
+                *(float*)(po+0x14)=y1*c-y2*s;*(float*)(po+0x24)=y1*s+y2*c;
+            }
+            float rx=*(float*)(po+0x00),ry=*(float*)(po+0x04),rz=*(float*)(po+0x08);
+            float fx=*(float*)(po+0x20),fy=*(float*)(po+0x24),fz=*(float*)(po+0x28);
+            *(float*)(po+0x30)+=fx*fwd+rx*str;
+            *(float*)(po+0x34)+=fy*fwd+ry*str+up;
+            *(float*)(po+0x38)+=fz*fwd+rz*str;
+            ((SetAbsPo_t)0x004E1100)(cam,(void*)po);
         }
-    }__except(1){g_HasStormPrev=false;}
+    }__except(1){}
+}
+void BoostActorVel(uintptr_t act,float mult){
+    if(mult<=1.01f||!CanRead(act,0x70))return;
+    uintptr_t ph=*(uintptr_t*)(act+0x6C);
+    if(CanWrite(ph+0x20,12)){
+        float vx=*(float*)(ph+0x20),vz=*(float*)(ph+0x28);
+        float v2=vx*vx+vz*vz;
+        if(v2>1.0f&&v2<2500.f){
+            float b=fminf(0.45f,(mult-1.f)*0.06f);
+            *(float*)(ph+0x20)=vx*(1.f+b);
+            *(float*)(ph+0x28)=vz*(1.f+b);
+        }
+    }
 }
 void TrackSlot(uintptr_t slot){
     float cur=*(float*)slot,mn=*(float*)(slot+4),mx=*(float*)(slot+8);
@@ -130,30 +114,54 @@ void TrackSlot(uintptr_t slot){
         }else g_Hp[slot]=cur;
     }
 }
-void UpdateDamage(){
-    if(!g_Active||g_EnemyDmg<=1.01f)return;
+void UpdateWorld(){
+    if(!g_Active){g_HasStormPrev=false;return;}
     __try{
         uintptr_t hero=GetHero();
-        if(!hero)return;
-        uintptr_t vec=*(uintptr_t*)RVA(0x0095A660);
+        if(hero)BoostActorVel(hero,g_SpideySpeed);
+        if(g_TorchSpeed>1.01f){
+            uint32_t sh=0x96478E0A;
+            uintptr_t act=((FindEnt_t)0x004DC300)(&sh,29,true);
+            if(CanRead(act,0x70)){
+                BoostActorVel(act,g_TorchSpeed);
+                uintptr_t po=*(uintptr_t*)(act+0x14);
+                if(CanWrite(po,0x40)){
+                    float x=*(float*)(po+0x30),y=*(float*)(po+0x34),z=*(float*)(po+0x38);
+                    if(g_HasStormPrev){
+                        float dx=x-g_PrevStormX,dy=y-g_PrevStormY,dz=z-g_PrevStormZ,d2=dx*dx+dy*dy+dz*dz;
+                        if(d2>0.0001f&&d2<400.f){
+                            float m=fminf(5.0f,(g_TorchSpeed-1.f)*0.25f);
+                            *(float*)(po+0x30)=x+dx*m;
+                            *(float*)(po+0x34)=y+dy*m;
+                            *(float*)(po+0x38)=z+dz*m;
+                            ((SetAbsPo_t)0x004E1100)(act,(void*)po);
+                            x=*(float*)(po+0x30);y=*(float*)(po+0x34);z=*(float*)(po+0x38);
+                        }
+                    }
+                    g_PrevStormX=x;g_PrevStormY=y;g_PrevStormZ=z;g_HasStormPrev=true;
+                }
+            }else g_HasStormPrev=false;
+        }
+        uintptr_t vec=*(uintptr_t*)0x0095A660;
         if(!CanRead(vec,16))return;
         uintptr_t beg=*(uintptr_t*)(vec+4),end=*(uintptr_t*)(vec+8);
         if(beg>=end||(end-beg)>4096||!CanRead(beg,end-beg))return;
         for(uintptr_t it=beg;it<end;it+=4){
             uintptr_t dam=*(uintptr_t*)it;
             if(!CanWrite(dam,0x230))continue;
-            if(*(uintptr_t*)(dam+0x04)==hero){
-                TrackSlot(dam+0x1FC);
-                TrackSlot(dam+0x20C);
-                TrackSlot(dam+0x21C);
+            uintptr_t act=*(uintptr_t*)(dam+0x04);
+            if(act==hero){
+                if(g_EnemyDmg>1.01f){TrackSlot(dam+0x1FC);TrackSlot(dam+0x20C);TrackSlot(dam+0x21C);}
+            }else if(CanRead(act,0x70)){
+                BoostActorVel(act,g_Aggro);
             }
         }
     }__except(1){}
 }
-void __cdecl hkAdvAI(float dt){
-    UpdateCam();UpdateStorm();UpdateDamage();
-    if(g_Active&&g_Aggro>1.01f)dt*=g_Aggro;
-    oAdvAI(dt);
+void __fastcall hkGameTick(void* self,void*,const float* dt){
+    UpdateCam();
+    UpdateWorld();
+    oGameTick(self,dt);
 }
 float ScaleAnimDt(void* self,float dt){
     if(!g_Active)return dt;
@@ -176,26 +184,28 @@ int __fastcall hkAdvAnim(void* self,void*,void* inst,float dt,float a4,float a5,
     return oAdvAnim(self,inst,dt,a4,a5,a6);
 }
 void InstallHooks(){
-    g_Base=(uintptr_t)GetModuleHandleA(0);
     DWORD op;
-    uintptr_t callAddr=RVA(0x00558442);
-    if(VirtualProtect((void*)callAddr,8,PAGE_EXECUTE_READWRITE,&op)){
-        int32_t rel=*(int32_t*)(callAddr+1);
-        oAdvAI=(AdvAI_t)(callAddr+5+rel);
-        *(int32_t*)(callAddr+1)=(int32_t)((uintptr_t)hkAdvAI-(callAddr+5));
-        VirtualProtect((void*)callAddr,8,op,&op);
+    g_TrampTick=(uint8_t*)VirtualAlloc(0,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
+    if(g_TrampTick&&VirtualProtect((void*)0x0055D510,8,PAGE_EXECUTE_READWRITE,&op)){
+        memcpy(g_TrampTick,(void*)0x0055D510,6);
+        *(g_TrampTick+6)=0xE9;
+        *(int32_t*)(g_TrampTick+7)=(int32_t)(0x0055D516-(uintptr_t)(g_TrampTick+11));
+        oGameTick=(GameTick_t)g_TrampTick;
+        *(uint8_t*)0x0055D510=0xE9;
+        *(int32_t*)0x0055D511=(int32_t)((uintptr_t)hkGameTick-0x0055D515);
+        *(uint8_t*)0x0055D515=0x90;
+        VirtualProtect((void*)0x0055D510,8,op,&op);
     }
-    uintptr_t animAddr=RVA(0x0049C090);
     g_TrampAnim=(uint8_t*)VirtualAlloc(0,32,MEM_COMMIT|MEM_RESERVE,PAGE_EXECUTE_READWRITE);
-    if(g_TrampAnim&&VirtualProtect((void*)animAddr,8,PAGE_EXECUTE_READWRITE,&op)){
-        memcpy(g_TrampAnim,(void*)animAddr,7);
+    if(g_TrampAnim&&VirtualProtect((void*)0x0049C090,8,PAGE_EXECUTE_READWRITE,&op)){
+        memcpy(g_TrampAnim,(void*)0x0049C090,7);
         *(g_TrampAnim+7)=0xE9;
-        *(int32_t*)(g_TrampAnim+8)=(int32_t)((animAddr+7)-(uintptr_t)(g_TrampAnim+12));
+        *(int32_t*)(g_TrampAnim+8)=(int32_t)(0x0049C097-(uintptr_t)(g_TrampAnim+12));
         oAdvAnim=(AdvAnim_t)g_TrampAnim;
-        *(uint8_t*)animAddr=0xE9;
-        *(int32_t*)(animAddr+1)=(int32_t)((uintptr_t)hkAdvAnim-(animAddr+5));
-        *(uint8_t*)(animAddr+5)=0x90;*(uint8_t*)(animAddr+6)=0x90;
-        VirtualProtect((void*)animAddr,8,op,&op);
+        *(uint8_t*)0x0049C090=0xE9;
+        *(int32_t*)0x0049C091=(int32_t)((uintptr_t)hkAdvAnim-0x0049C095);
+        *(uint8_t*)0x0049C095=0x90;*(uint8_t*)0x0049C096=0x90;
+        VirtualProtect((void*)0x0049C090,8,op,&op);
     }
 }
 void UpdateLabels(){
