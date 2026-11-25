@@ -48,14 +48,22 @@ void UpdateCam(){
     if(!g_FreeCam&&!g_PrevCam)return;
     __try{
         uintptr_t g=*(uintptr_t*)RVA(0x009682E0);
-        if(CanWrite(g+0x172,1)){*(uint8_t*)(g+0x172)=g_FreeCam?1:0;g_PrevCam=g_FreeCam;}
+        if(!CanWrite(g+0x172,1))return;
+        bool justEnabled=(g_FreeCam&&!g_PrevCam);
+        *(uint8_t*)(g+0x172)=g_FreeCam?1:0;
+        g_PrevCam=g_FreeCam;
         if(!g_FreeCam)return;
-        uintptr_t ml=*(uintptr_t*)RVA(0x0095C17C);
-        uintptr_t cam=CanRead(ml,0x18)?*(uintptr_t*)(ml+0x10):0;
-        if(!cam&&CanRead(g+0x64,4))cam=*(uintptr_t*)(g+0x60);
+        uintptr_t cam=*(uintptr_t*)(g+0x5C);
         if(!CanRead(cam,0x18))return;
         uintptr_t po=*(uintptr_t*)(cam+0x14);
         if(!CanWrite(po,0x40))return;
+        if(justEnabled){
+            uintptr_t srcCam=*(uintptr_t*)(g+0x60);
+            if(CanRead(srcCam,0x18)&&srcCam!=cam){
+                uintptr_t srcPo=*(uintptr_t*)(srcCam+0x14);
+                if(CanRead(srcPo,0x40))memcpy((void*)po,(void*)srcPo,0x40);
+            }
+        }
         float spd=(GetAsyncKeyState(VK_SHIFT)&0x8000)?4.5f:1.1f;
         float fwd=0,str=0,up=0,yaw=0,pit=0;
         if(GetAsyncKeyState(0x49)&0x8000)fwd+=spd;
@@ -227,13 +235,13 @@ void InitPanel(){
     SendMessageA(g_Trk0,TBM_SETRANGE,1,MAKELONG(100,500));SendMessageA(g_Trk0,TBM_SETPOS,1,135);
     g_Lbl1=CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,15,94,300,20,g_Panel,0,wc.hInstance,0);
     g_Trk1=CreateWindowA("msctls_trackbar32","",WS_CHILD|WS_VISIBLE|TBS_HORZ,15,114,300,28,g_Panel,0,wc.hInstance,0);
-    SendMessageA(g_Trk1,TBM_SETRANGE,1,MAKELONG(100,1000));SendMessageA(g_Trk1,TBM_SETPOS,1,165);
+    SendMessageA(g_Trk1,TBM_SETRANGE,1,MAKELONG(100,10000));SendMessageA(g_Trk1,TBM_SETPOS,1,165);
     g_Lbl2=CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,15,148,300,20,g_Panel,0,wc.hInstance,0);
     g_Trk2=CreateWindowA("msctls_trackbar32","",WS_CHILD|WS_VISIBLE|TBS_HORZ,15,168,300,28,g_Panel,0,wc.hInstance,0);
     SendMessageA(g_Trk2,TBM_SETRANGE,1,MAKELONG(100,500));SendMessageA(g_Trk2,TBM_SETPOS,1,350);
     g_Lbl3=CreateWindowA("STATIC","",WS_CHILD|WS_VISIBLE,15,202,300,20,g_Panel,0,wc.hInstance,0);
     g_Trk3=CreateWindowA("msctls_trackbar32","",WS_CHILD|WS_VISIBLE|TBS_HORZ,15,222,300,28,g_Panel,0,wc.hInstance,0);
-    SendMessageA(g_Trk3,TBM_SETRANGE,1,MAKELONG(100,1000));SendMessageA(g_Trk3,TBM_SETPOS,1,154);
+    SendMessageA(g_Trk3,TBM_SETRANGE,1,MAKELONG(100,10000));SendMessageA(g_Trk3,TBM_SETPOS,1,154);
     g_ChkCam=CreateWindowA("BUTTON","Free Cam (IJKL + UO + Arrows + Shift)",WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,15,258,300,22,g_Panel,(HMENU)102,wc.hInstance,0);
     CreateWindowA("BUTTON","Save to INI",WS_CHILD|WS_VISIBLE,15,292,120,28,g_Panel,(HMENU)103,wc.hInstance,0);
     UpdateLabels();
